@@ -1,0 +1,389 @@
+---
+title: "Wine Quality"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(glmnet)
+library(leaps)
+library(ggplot2)
+library(MASS)
+library(pls)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The goal is to apply some of the methods for supervised and unsupervised analysis to characterize the relationship between wine quality and its analytical characteristics [available at UCI ML repository](https://archive.ics.uci.edu/ml/datasets/Wine+Quality), and to understand which wine properties influence the most wine quality as determined by expert evaluation.  
+
+The output variable in this case assigns wine to discrete categories between 0 (the worst) and 10 (the best), so that this problem can be formulated as classification or regression -- here I will stick to the latter and treat/model outcome as continuous variable.  For more details please see [dataset description available at UCI ML](https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality.names). 
+
+Here I develop models of wine quality for red and white wine seperately, investigate attributes deemed important for wine quality in both and determine whether quality of red and white wine is influenced predominantly by the same or different analytical properties (i.e. predictors in these datasets).  
+
+Lastly, as an exercise in unsupervised learning I combined analytical data for red and white wine and describe the structure of the resulting data -- whether there are any well defined clusters, what subsets of observations they appear to represent, which attributes seem to affect the most this structure in the data, etc.
+
+#Part 1: load and summarize the data 
+
+```{r Part 1, echo=TRUE}
+
+#read in data
+data.red <- read.table("winequality-red.csv", sep = ";", header = TRUE)
+data.white <- read.table("winequality-white.csv", sep = ";", header = TRUE)
+
+#check for NAs
+sum(is.na(data.red))
+sum(is.na(data.white))
+
+#numerical summaries
+summary(data.red)
+head(data.red)
+str(data.red)
+summary(data.white)
+head(data.white)
+str(data.white)
+
+#make quality numeric
+data.red[,"quality"] <- as.numeric(data.red[,"quality"])
+data.white[,"quality"] <- as.numeric(data.white[,"quality"])
+
+#graphical summaries and transformation (red)
+#pairs(data.red, col = data.red$quality, pch = data.red$quality) 
+data.red <- data.red[data.red[,"total.sulfur.dioxide"] < 250, ] #remove outliers
+pairs(data.red, col = data.red$quality, pch = data.red$quality) 
+
+#graphical summaries and transformation (white)
+#pairs(data.white, col = data.white$quality, pch = data.white$quality) 
+data.white <- data.white[data.white[,"density"] < 1.02, ]
+data.white <- data.white[data.white[,"free.sulfur.dioxide"] < 250, ]
+pairs(data.white, col = data.white$quality, pch = data.white$quality)  
+
+```
+
+### Part 1: Summary of data / Comments on Preprocessing
+> There are 11 predictors, 1599 observations for red wine, and 4898 observations for white wine. The outcome predictor for both white and red has most points falling between quality scores 5 and 6 (1st quartile and 3rd quartile). 
+
+> Alcohol and Volatile acidity look like they could be the most useful predictors as they manage to seperate the different quality of wine the most as compared to the other predictors (i.e. blues on left, pinks on right and so on). 
+
+> There appears to be some large outliers in total sulfur dioxide for red, and density and free sulfur dioxide for white. These have been removed and the pairs plot re-rendered.
+
+> Visually from the scatterplots, there appears not to be a strong correlation between attributes, except between free and total sulfur dioxide, total acidity and pH, which are to be expected since these predictors depend on one another. Multicollinearity should be kept in mind when dealing with these particular pairs.
+
+> Non-linearity does not seem to be a big issue here, and taking the log transformation of data did not improve a linearity of the relationships between predictors and outcome very much. And therefore I have chosen not to do log transformation. Log relationships output is not shown to avoid repeating the pairs plot, but I did plot them using pairs(data.white+1, col = data.white$quality, pch = data.white$quality, log = "xy").
+
+> While log transformation is not necessary, I think scaling the data is necessary due to differing units of measurement of the predictors. I will use scale(data) in later analysis.
+
+> The challenge with this data could lie in the weak correlation of predictors to outcome (by visual inspection of scatterplots). 
+
+
+# Part 2: choose optimal models by exhaustive, forward and backward selection, desribe attributes deemed important in each case
+
+
+```{r Part 2, echo=TRUE}
+library(leaps)
+
+
+run.regsubsets <- function(inputdata, wine){
+  #best model selection  
+  summaryMetrics <- NULL
+  whichAll <- list()
+  regsubsetsAll <- list()
+  for ( myMthd in c("exhaustive", "backward", "forward") ) {
+    rsRes <- regsubsets(quality~., inputdata ,method=myMthd,nvmax=11)
+    regsubsetsAll[[myMthd]] <- rsRes
+    summRes <- summary(rsRes)
+    whichAll[[myMthd]] <- summRes$which
+    for ( metricName in c("rsq","rss","adjr2","cp","bic") ) {
+      summaryMetrics <- rbind(summaryMetrics,
+        data.frame(method=myMthd,metric=metricName,
+                nvars=1:length(summRes[[metricName]]),
+                value=summRes[[metricName]]))
+    }
+  }
+  print(ggplot(summaryMetrics,aes(x=nvars,y=value,shape=method,colour=method)) + geom_path() + geom_point() + facet_wrap(~metric,scales="free") +   theme(legend.position="top") + ggtitle(wine))
+  
+  #variable membership
+  old.par <- par(mfrow=c(2,2),ps=12,mar=c(5,7,2,1))
+  for ( myMthd in names(whichAll) ) {
+    image(1:nrow(whichAll[[myMthd]]),
+        1:ncol(whichAll[[myMthd]]),
+        whichAll[[myMthd]],xlab="N(vars)",ylab="",
+        xaxt="n",yaxt="n",breaks=c(-0.5,0.5,1.5),
+        col=c("white","gray"),main=paste(wine, myMthd))
+    axis(1,1:nrow(whichAll[[myMthd]]),rownames(whichAll[[myMthd]]))
+    axis(2,1:ncol(whichAll[[myMthd]]),colnames(whichAll[[myMthd]]),las=2)
+  }
+  par(old.par)
+}
+
+for (wine in c("red", "white")){
+  data.input <- as.data.frame(scale(eval(parse(text =paste0("data.",wine)))))
+  run.regsubsets(data.input, wine)
+}
+
+```
+
+### Part 2: Describe attributes and optimal models by exhaustive, forward and backward selection
+
+> All three variable selection methods when applied to the scaled red wine dataset yielded models with very similar fit metrics. Rsq and Rss had the best fit with largest possible model, i.e. nvar = 11. Adjr2, Cp and Bic with its penalty for additional predictors reached their respective optimal values at about a 7-predictor model.
+
+> For the scaled white wine data, exhaustive and forward subset selection methods yielded similar fit results. For models of smaller size (nvars < 6), backward selection tended to produce a model with weaker fit (larger Cp, Bic, Rss, smaller rsq, adjr2) than the other methods. At larger models (nvar > 6) backward selection's fit metrics were comparable with the others. For all the metrics, except BIC, the model fit improved (or at least did not deteriorate) with additional predictors. BIC reached a minimum at an 8-predictor model. 
+
+> For the red wine, all three subset selection methods chose the same variables at all model sizes. The best model by BIC/Cp (6-7 predictors) consisted of Volatile Acidity, Chlorides, Free Sulfur Dioxide, Total Sulfur Dioxide, pH, sulfates and alcohol. And this was consistent across the 3 methods.
+
+> For the white wine, 3 selection methods had slightly differing variable selection, but for the optimal model size by BIC (8 predictors), they were consistent in choosing alcohol, sulfates, pH, density, free sulfur dioxide, residual sugar, volatile acidity and fixed acidity.
+
+# Part 3: optimal model by cross-validation / resampling
+
+```{r Sub Problem 3, echo=TRUE}
+
+crossvalidate <- function(inpDat, wine, nTries=30){
+  
+  predict.regsubsets <- function (object, newdata, id, ...){
+    #form=as.formula(object$call [[2]])
+    mat=model.matrix(quality ~.,newdata)
+    coefi=coef(object,id=id)
+    xvars=names (coefi)
+    mat[,xvars] %*% coefi
+  }
+
+#for (wine in c("red", "white")){
+ #inpDat <- as.data.frame(scale(eval(parse(text=paste0("data.",wine)))[,c(12, 1:11)]))
+ #nTries <- 30
+  
+  
+    dfTmp <- NULL
+    whichSum <- array(0,dim=c(11,12,3),
+    dimnames=list(NULL,colnames(model.matrix(quality~.,inpDat)),
+        c("exhaustive", "backward", "forward")))
+    # Split data into training and test 30 times:
+    for ( iTry in 1:nTries ) {
+      bTrain <- sample(rep(c(TRUE,FALSE),length.out=nrow(inpDat)))
+      # Try each method available in regsubsets
+      # to select best model of each size:
+      for ( jSelect in c("exhaustive", "backward", "forward")) {
+        rsTrain <- regsubsets(quality~.,inpDat[bTrain,],nvmax=11,method=jSelect)
+        # Add up variable selections:
+        whichSum[,,jSelect] <- whichSum[,,jSelect] + summary(rsTrain)$which
+        # Calculate test error for each set of variables
+        # using predict.regsubsets implemented above:
+        for ( kVarSet in 1:11 ) {
+          # make predictions:
+          
+          testPred <- predict(rsTrain,inpDat[!bTrain,],id=kVarSet)
+          # calculate MSE:
+          mseTest <- mean((testPred-inpDat[!bTrain,"quality"])^2)
+          # add to data.frame for future plotting:
+          dfTmp <- rbind(dfTmp,data.frame(sim=iTry,sel=jSelect,vars=kVarSet,
+          mse=c(mseTest,summary(rsTrain)$rss[kVarSet]/sum(bTrain)),trainTest=c("test","train")))
+        }
+      }
+    }
+    # plot MSEs by training/test, number of 
+    # variables and selection method:
+    print (ggplot(dfTmp,aes(x=factor(vars),y=mse,colour=sel)) + geom_boxplot()+facet_wrap(~trainTest) +ggtitle(wine))
+    
+    
+    old.par <- par(mfrow=c(2,2),ps=11,mar=c(5,7,2,1))
+    for ( myMthd in dimnames(whichSum)[[3]] ) {
+      tmpWhich <- whichSum[,,myMthd] / nTries
+      image(1:nrow(tmpWhich),1:ncol(tmpWhich),tmpWhich,
+            xlab="N(vars)",ylab="",xaxt="n",yaxt="n",main=paste(wine, myMthd),
+            breaks=c(-0.1,0.1,0.25,0.5,0.75,0.9,1.1),
+            col=c("white","gray90","gray75","gray50","gray25","gray10"))
+      axis(1,1:nrow(tmpWhich),rownames(tmpWhich))
+      axis(2,1:ncol(tmpWhich),colnames(tmpWhich),las=2)
+    }
+    par(old.par)
+}
+
+for (wine in c("red", "white")){
+  crossvalidate(as.data.frame(scale(eval(parse(text=paste0("data.",wine)))[,c(12, 1:11)])), wine = wine)
+}
+
+```
+
+
+### Part 3: Comments on optimal model by cross-validation / resampling
+
+> Test mse noticeably decreases when we add up to about 5 predictors for red wine and up to about 7 predictors for white wine. After the aforementioned number of predictors in red and white wine respectively, adding more predictors might reduce the mse further, but the amount of reduction is relatively small compared to the variance, and so the reduction might not be significant or worthwhile for the additional model complexity.
+
+> In both white and red wine, the test mse is higher than the train mse at all sizes of the model.
+
+> In red wine, the 3 selection methods produced very similar train and test mses across all sizes of the model. In white wine, backward selection produced higher test and train mses for models of up to 6 predictors, there after it had very similar mses with fowards and best subset selection method. This is similar to the result when using the other fit metrics (r2, rss, cp bic, adjr2). 
+
+> The best model chosen by test mse is smaller than that chosen by regsubsets, even using the BIC metric which derived the smallest models (7 predictors for red and 8 for white). This suggests that overfitting (and therefore reduction in bias was more than increase in variance) crept in earlier according to test mses, than what the BIC metric adjusted for in size of model. 
+> Plots of average variable membership suggest that alcohol is indeed the most useful predictor given all models chose it as the only predictor for a single predictor model, for both red and white wine. For red wine, next two predictors added to the model would be volatile acidity and sulphates.
+
+> For red wine, variable membership at the optimal model by test mse (5 predictors) is relatively stable across all 3 selection methods and typically includes alcohol, sulphates, total sulfur dioxide, chlorides and volatile acidity. Sometimes pH is included probably at the expense of total sulfur dioxide and chlorides. 
+
+> For white wine, variable membership at the optimal model by test mse (7 predictors) is relatively stable across all 3 selection methods and typically includes sulphates, pH, density, free sulfur dioxide, residual sugar and volatile acidity. The 7th predictor is sometimes alcohol or fixed acidity. 
+
+
+
+# Part 4: Model selection by regularied approaches - lasso/ridge 
+
+
+```{r Sub Problem 4 Ridge, echo=TRUE}
+# -1 to get rid of intercept that glmnet knows to include:
+
+#ridgeORlasso <- function(n = 0){
+  
+  for (wine in c("red", "white")){
+  
+  x <- model.matrix(quality~.,as.data.frame(scale(eval(parse(text=paste0("data.",wine))))))[,-1]
+  y <- as.data.frame(scale(eval(parse(text=paste0("data.",wine)))))[,"quality"]
+  
+    
+  #ridge
+  ridgeRes <- glmnet(x,y,alpha=0)
+  plot(ridgeRes, main = paste(wine, "ridge"))
+  
+  cvRidgeRes <- cv.glmnet(x,y,alpha=0)
+  plot(cvRidgeRes, main = paste(wine, "ridge"))
+  
+  print (paste(wine, "ridge", "lambda 1se"))
+  print (cvRidgeRes$lambda.1se)
+  print (predict(ridgeRes,type="coefficients",s=cvRidgeRes$lambda.1se))
+  
+  #print (paste(wine, "ridge", "lambda min"))
+  #print (cvRidgeRes$lambda.min)
+  #print (predict(ridgeRes,type="coefficients",s=cvRidgeRes$lambda.min))
+  
+  ridgeCoefCnt <- 0
+  ridgeCoefAve <- 0
+  ridgeMSE <- NULL
+  for ( iTry in 1:30 ) {
+    bTrain <- sample(rep(c(TRUE,FALSE),length.out=dim(x)[1]))
+    cvridgeTrain <- cv.glmnet(x[bTrain,],y[bTrain],alpha=0)
+    ridgeTrain <- glmnet(x[bTrain,],y[bTrain],alpha=0)
+    ridgeTrainCoef <- predict(ridgeTrain,type="coefficients",s=cvridgeTrain$lambda.1se)
+    ridgeCoefCnt <- ridgeCoefCnt + (ridgeTrainCoef[-1,1]!=0)
+    ridgeCoefAve <- ridgeCoefAve + ridgeTrainCoef[-1,1]
+    ridgeTestPred <- predict(ridgeTrain,newx=x[!bTrain,],s=cvridgeTrain$lambda.1se)
+    ridgeMSE <- c(ridgeMSE,mean((ridgeTestPred-y[!bTrain])^2))
+  }
+  ridgeCoefAve <- ridgeCoefAve / length(ridgeMSE)
+  ridgeCoefAve
+  
+  print ("Mean MSE and Range at Lambda 1se")
+  print (mean(ridgeMSE))
+  print (quantile(ridgeMSE))
+  
+  }
+
+```
+
+
+```{r Sub Problem 4 Lasso, echo=TRUE}
+
+for (wine in c("red", "white")){
+      
+    x <- model.matrix(quality~.,as.data.frame(scale(eval(parse(text=paste0("data.",wine))))))[,-1]
+    y <- as.data.frame(scale(eval(parse(text=paste0("data.",wine)))))[,"quality"]
+      
+    #lasso
+    lassoRes <- glmnet(x,y,alpha=1)
+    plot(lassoRes, main = paste(wine, "lasso"))
+    
+    cvLassoRes <- cv.glmnet(x,y,alpha=1)
+    plot(cvLassoRes, main = paste(wine, "lasso"))
+    
+    print (paste(wine, "lasso", "lambda 1se"))
+    print (cvLassoRes$lambda.1se)
+    print (predict(lassoRes,type="coefficients",s=cvLassoRes$lambda.1se))
+    
+    #print (paste("red", "lasso", "lambda min"))
+    #cvLassoRes$lambda.min
+    #predict(lassoRes,type="coefficients",s=cvLassoRes$lambda.min)
+    
+    lassoCoefCnt <- 0
+    lassoMSE <- NULL
+    for ( iTry in 1:30 ) {
+      bTrain <- sample(rep(c(TRUE,FALSE),length.out=dim(x)[1]))
+      cvLassoTrain <- cv.glmnet(x[bTrain,],y[bTrain],alpha=1)
+      lassoTrain <- glmnet(x[bTrain,],y[bTrain],alpha=1)
+      lassoTrainCoef <- predict(lassoTrain,type="coefficients",s=cvLassoTrain$lambda.1se)
+      lassoCoefCnt <- lassoCoefCnt + (lassoTrainCoef[-1,1]!=0)
+      lassoTestPred <- predict(lassoTrain,newx=x[!bTrain,],s=cvLassoTrain$lambda.1se)
+      lassoMSE <- c(lassoMSE,mean((lassoTestPred-y[!bTrain])^2))
+    }
+    print (mean(lassoMSE))
+    print (quantile(lassoMSE))
+    print (lassoCoefCnt)
+
+}
+```
+
+### Part 4: Comments on model selection by regularied approaches - lasso/ridge 
+
+> Ridge regression does not select features, so the optimal model by ridge regression contains all 11 predictors, except that its coefficients have been shrunk closer to zero. Erring on the side of a more regularized model (i.e. using lambda 1se higher than the mininum, lambda.1se = 0.532), we get a test mse of 0.694 for the red wine data. This mse is higher than the lowest mse we got via regsubsets and resampling.
+
+> For the white wine, ridge regression arrives at a less regularized model (1se lambda = 0.25), and this model has a test mse of 0.746, which is higher than the lowest mse we got via regsubsets and resampling.
+
+> Using Lasso Regression and erring on the side of a more regularized model (i.e. using lambda 1se higher than the mininum, lambda.1se = 0.0888), we would select a model with 4 predictors for the red wine data. This model has a test mse of 0.694 and the 4 predictors would be volatile acidity, total sulfur dioxide, sulphates and alcohol. 
+
+> Similarly for the white wine data, Lasso Regression would select a model with 8 predictors using a lambda of 1se away from the mininum (lambda.1se = 0.02936144). This model has a test mse of 0.736 and the 8 predictors would be fixed acidity, volatile acidity, residual sugar, chlorides, free sulfur dioxide, sulphates and alcohol. About half the time pH might also be chosen. 
+
+> The Lasso test mses are very similar to the Ridge regression mses; and are higher than the lowest mse we got via regsubsets and resampling. 
+
+> For the red wine data, Lasso regression arrived at a smaller model with 4 predictors than resampling (5 predictors) and regsubsets (7 predictors). The variable membership is consistent with reampling and regsubsets - for 4 predictor model all the methods more or less chose the same predictors.
+
+> For the white wine data, Lasso regression arrived at a model of roughly the same size of 8 predictors as resampling and regsubsets. Although i concluded that resampling gives a model of 7 predictors, the real difference between 7 and 8 was marginal. Lasso and the earlier methods also always included fixed acidity, volatile acidity, residual sugars, free sulfur dioxide, sulphates and alcohol in the model. However, Lasso and resampling / regsubsets differed in terms of variable choice for 1 variable- Lasso typically chose chlorides while resampling/regsubsets typically chose density. 
+
+> The top 2 predictors for both red and white wine, and using Lasso or Ridge, with the largest coefficients are alcohol and volatile acidity. This is consistent with the regsubset's or resampling's choice of predictors in a 2-predictor model. 
+
+
+
+
+# Part 5: Unsupervised Analysis - PCA on merged dataset (red and white)
+
+```{r Sub Problem 5, echo=TRUE}
+
+data.merge <- rbind(cbind.data.frame(data.red, winetype = rep("red", nrow(data.red))), cbind.data.frame(data.white, winetype = rep("white", nrow(data.white))))
+
+pcaData <- prcomp(scale(data.merge[,1:11]))
+#biplot(pcaData, scale = 0)
+
+#plot(pcaData$rotation[,1:2])
+plot(pcaData$x[,1:2])
+
+#colour by red or white wine
+plot(pcaData$x[,1:2], col = data.merge[,13], main = "Colour by Wine Type")
+legend(x = "topright", pch = 1, col = c(1, 2), legend = c("red wine", "white wine"))
+
+#colour by quality
+plot(pcaData$x[,1:2], col = data.merge[,12], main = "Colour by Wine Quality")
+legend(x = "topright", pch = 1, col = c(1:11), legend = c(0:10))
+
+```
+
+### Part 5: Unsupervised Analysis - PCA on merged dataset (red and white)
+
+> Looking at the plot of observations projected on PC1 and PC2 with no colouring, it looks like there there are two main cluster groups - one to the right and one to the left, separated mainly along the PC1 axis. Colouring in the points by wine type does show that the clustering is indeed due to red and white wines, the former is on the left (lower values of  PC1) and the latter is on the right (with higher values of PC1). This suggests that PC1 could represent the type of wine.
+
+> Looking at the plot coloured by wine quality, there seems to be a slight seperation in the direction of PC2-- the lower quality has higher PC2 scores, especially at in the region of -1 < PC1 < 1. That is, quality score 4 (light blue), sits somewhat on top of quality score 5 (pink), which sits on top of quality score 6 (yellow).  That said, the separation in terms of wine quality is not clear cut, in fact there are quite a lot of overlap. For example, quality score 3 (dark blue) seems to be dispersed all over the range of PC2, and at PC1 < -1, all the colours seem to be dispersed over the entire vertical range. I would conclude that there is no clear seperation of obervations in terms of wine quality.
+
+# Part 6: Model wine quality using principal components, Compare model to original predictors
+
+Compute PCA representation of the data for one of the wine types (red or white) *excluding wine quality attribute* (of course!). Use resulting principal components (slot `x` in the output of `prcomp`) as new predictors to fit a linear model of wine quality as a function of these predictors.  Compare resulting fit (in terms of MSE, r-squared, etc.) to those obtained above.  Comment on the differences and similarities between these fits.
+
+```{r Bonus Qn, echo=TRUE}
+pcaRed <- prcomp(scale(data.red[,1:11]))
+data.pc <- cbind.data.frame(pcaRed$x, quality = data.red$quality)
+run.regsubsets(as.data.frame(scale(data.pc)), "Red Wine - PCR")
+crossvalidate(as.data.frame(scale(data.pc[,c(12, 1:11)])), wine = "Red Wine - PCR")
+```
+
+### Part 6: Comparison of principal component mode and original predictors
+
+> Running Regsubsets on the principal components derived a model of about size 7 predictors if we went by the lowest BIC score. Cp was minimum at a 9 predictor model. Rsq, Rss and Adjr2 were maximum at the full model. 
+
+> In a 8 predictor model, the Pricinpal Components chosen by all best subset, forward and backward selection were the same -- PCs 1 through 5 and 7 through 9. 
+
+> The best model explained 36% of the variability in the response (both R2 and AdjR2 approximately equal to 0.36 at the maximum). This is comparable to the R2 and AdjR2 values obtained by regsubsets (the maximum R2 and AdjR2 there was also about 0.36). This makes sense as the both techniques are based on the same data, and once all the available data / predictors is included in the model whether in original form or in principal component form, the same amount of the response can be explained.
+
+> Test mse on the Principal Component model reached minimum mse at about 8 to 9 predictors; the value of minimum mse is similar to that of the unrotated predictors (min MSE approximately 0.66). This is a larger model than the original predictors (lowest mse at 6 predictors). The MSEs for the PC models of less than 6 predictors are higher in the PCR model than the original model. If one is looking to use a smaller model (less than 6 predictors) it might be better to stick to the orignal predictors as the test mse is lower. 
+
+> The 8 predictor model typically includes PCs 1-3, 5 and 7-9. Sometimes PCs 4 and 10 are included. 
+
+> Overall I would conclude that the principal component regression model does not give much advantage over the regular predictors model for Red Wine. The PCR model does not give a smaller model, although the best possible MSEs and model accuracy are comparable, I'd rather use the less complex (in terms of number of predictors) and more intuitive model--easier to explain the original predictors than the rotated predictors, or principal components).
